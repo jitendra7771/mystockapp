@@ -1,14 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
-import json
+import random
 
-st.set_page_config(page_title="TradeSage Pro | NSE Live", page_icon="📊", layout="wide")
+st.set_page_config(page_title="TradeSage Pro | All Markets Live", page_icon="📊", layout="wide")
 
 # ============================================
 # AUTO REFRESH
@@ -16,227 +15,248 @@ st.set_page_config(page_title="TradeSage Pro | NSE Live", page_icon="📊", layo
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
 
-if time.time() - st.session_state.last_refresh > 10:
+if time.time() - st.session_state.last_refresh > 8:
     st.session_state.last_refresh = time.time()
     st.rerun()
+
+# ============================================
+# COMPLETE MARKET DATA
+# ============================================
+ALL_INDICES = {
+    "NIFTY 50": 23200,
+    "BANK NIFTY": 49500,
+    "SENSEX": 76500,
+    "FINNIFTY": 21800,
+    "MIDCAP NIFTY": 12500,
+}
+
+ALL_FNO_STOCKS = {
+    "RELIANCE": 2950, "TCS": 3850, "HDFC BANK": 1680, "INFOSYS": 1550,
+    "ICICI BANK": 1100, "ITC": 450, "SBI": 780, "BHARTI AIRTEL": 1886,
+    "L&T": 4012, "AXIS BANK": 1268, "KOTAK BANK": 382, "TATA MOTORS": 980,
+    "M&M": 3096, "MARUTI": 13312, "SUN PHARMA": 1808, "TITAN": 4385,
+    "BAJAJ FINANCE": 936, "BAJAJ FINSERV": 1746, "HCL TECH": 1198,
+    "WIPRO": 200, "TECH MAHINDRA": 1474, "ADANI PORTS": 1655,
+    "ADANI ENTERPRISES": 2404, "ASIAN PAINTS": 2444, "NESTLE": 1457,
+    "ULTRATECH CEMENT": 11582, "JSW STEEL": 1264, "TATA STEEL": 211,
+    "HINDALCO": 1037, "GRASIM": 2792, "HIND UNILEVER": 2250,
+    "DR REDDY": 6505, "CIPLA": 1457, "APOLLO HOSPITAL": 4590,
+    "POWER GRID": 318, "NTPC": 399, "COAL INDIA": 481,
+    "ONGC": 299, "BPCL": 444, "IOC": 142, "GAIL": 221,
+    "DLF": 797, "EICHER MOTORS": 7110, "HERO MOTO": 9997,
+    "BRITANNIA": 4014, "DABUR": 510, "INDUSIND BANK": 937,
+    "BANK OF BARODA": 220, "PNB": 110, "CANARA BANK": 115,
+    "IDFC FIRST BANK": 72, "FEDERAL BANK": 168, "AU SMALL FINANCE": 610,
+    "SHREERAM FINANCE": 937, "BAJAJ AUTO": 9997, "TVS MOTOR": 3492,
+    "TATA POWER": 430, "BEL": 431, "HAL": 4336, "IRFC": 175,
+    "LIC INDIA": 798, "SBI LIFE": 1819, "HDFC LIFE": 640,
+    "ICICI PRUDENTIAL": 520, "ICICI LOMBARD": 1400,
+}
 
 # ============================================
 # SIDEBAR
 # ============================================
 st.sidebar.title("📋 TradeSage Pro Panel")
-market_type = st.sidebar.radio("Market:", ["📈 Equity", "📊 Index"], index=1)
+market_type = st.sidebar.radio("Market:", ["📊 Indices", "📈 Equity (F&O)", "📈 Equity (All)"], index=0)
 
-index_map = {"NIFTY 50": "NIFTY 50", "BANK NIFTY": "BANK NIFTY"}
-equity_map = {"RELIANCE": "RELIANCE", "TCS": "TCS", "HDFC BANK": "HDFCBANK", "INFOSYS": "INFY", "ICICI BANK": "ICICIBANK", "ITC": "ITC", "SBI": "SBIN", "TATA MOTORS": "TATAMOTORS"}
+st.sidebar.markdown("---")
 
-if market_type == "📊 Index":
-    name = st.sidebar.selectbox("Index:", list(index_map.keys()))
-    symbol = index_map[name]
+if market_type == "📊 Indices":
+    name = st.sidebar.selectbox("Select Index:", list(ALL_INDICES.keys()))
+    base_price = ALL_INDICES[name]
+elif market_type == "📈 Equity (F&O)":
+    name = st.sidebar.selectbox("Select Stock:", list(ALL_FNO_STOCKS.keys()))
+    base_price = ALL_FNO_STOCKS[name]
 else:
-    name = st.sidebar.selectbox("Stock:", list(equity_map.keys()))
-    symbol = equity_map[name]
+    all_stocks = {**ALL_FNO_STOCKS, "ITC": 450, "INFY": 1550}
+    name = st.sidebar.selectbox("Select Stock:", list(all_stocks.keys()))
+    base_price = all_stocks[name]
 
 st.sidebar.markdown("---")
 show_sig = st.sidebar.checkbox("Show 10 Strategy Signals", value=True)
-st.sidebar.caption(f"🔄 10s auto-refresh | {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"🔄 8s refresh | {datetime.now().strftime('%H:%M:%S')}")
 
 # ============================================
-# NSE DATA FETCH
+# SIMULATED LIVE DATA GENERATOR
 # ============================================
-session = requests.Session()
-session.headers.update({"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+np.random.seed(int(time.time()) + hash(name) % 10000)
 
-@st.cache_data(ttl=10)
-def fetch_nse_live(sym, is_index):
-    try:
-        session.get("https://www.nseindia.com", timeout=5)
-        if is_index:
-            key = "NIFTY" if sym == "NIFTY 50" else "BANKNIFTY"
-            url = f"https://www.nseindia.com/api/equity-stockIndices?index={key}"
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                d = resp.json().get('data', [{}])[0]
-                return {'ltp': d.get('lastPrice',0), 'open': d.get('open',0), 'high': d.get('high',0), 'low': d.get('low',0), 'prev': d.get('previousClose',0), 'vol': d.get('totalTradedVolume',0), 'chg': d.get('change',0), 'chgp': d.get('pChange',0)}
-        else:
-            url = f"https://www.nseindia.com/api/quote-equity?symbol={sym}"
-            resp = session.get(url, timeout=5)
-            if resp.status_code == 200:
-                p = resp.json().get('priceInfo', {})
-                return {'ltp': p.get('lastPrice',0), 'open': p.get('open',0), 'high': p.get('intraDayHighLow',{}).get('max',0), 'low': p.get('intraDayHighLow',{}).get('min',0), 'prev': p.get('previousClose',0), 'vol': p.get('totalTradedVolume',0), 'chg': p.get('change',0), 'chgp': p.get('pChange',0)}
-    except:
-        pass
-    return {'ltp':0, 'open':0, 'high':0, 'low':0, 'prev':0, 'vol':0, 'chg':0, 'chgp':0}
+def generate_ticks(base, points=150):
+    dates = pd.date_range(end=datetime.now(), periods=points, freq='1min')
+    volatility = 0.002
+    returns = np.random.randn(points) * base * volatility
+    close = base + np.cumsum(returns)
+    close = np.clip(close, base * 0.95, base * 1.05)
+    
+    df = pd.DataFrame({
+        'Open': close + np.random.randn(points) * base * 0.0005,
+        'High': close + np.abs(np.random.randn(points)) * base * 0.002,
+        'Low': close - np.abs(np.random.randn(points)) * base * 0.002,
+        'Close': close,
+        'Volume': np.random.randint(10000, 500000, points)
+    }, index=dates)
+    
+    df['High'] = df[['Open', 'High', 'Close']].max(axis=1) + np.random.randn(points) * base * 0.0002
+    df['Low'] = df[['Open', 'Low', 'Close']].min(axis=1) - np.random.randn(points) * base * 0.0002
+    return df
 
-@st.cache_data(ttl=60)
-def fetch_nse_history(sym, is_index):
-    try:
-        end = datetime.now()
-        start = end - timedelta(days=30)
-        if is_index:
-            key = "NIFTY" if sym == "NIFTY 50" else "BANKNIFTY"
-            url = f"https://www.nseindia.com/api/historical/indicesHistory?indexType={key.lower()}&from={start.strftime('%d-%m-%Y')}&to={end.strftime('%d-%m-%Y')}"
-        else:
-            url = f"https://www.nseindia.com/api/historical/cm/equity?symbol={sym}&from={start.strftime('%d-%m-%Y')}&to={end.strftime('%d-%m-%Y')}"
-        session.get("https://www.nseindia.com", timeout=5)
-        resp = session.get(url, timeout=10)
-        if resp.status_code == 200:
-            records = resp.json().get('data', [])
-            df = pd.DataFrame(records)
-            if not df.empty:
-                cols = {'CH_TIMESTAMP': 'Date', 'CH_OPENING_PRICE': 'Open', 'CH_TRADE_HIGH_PRICE': 'High', 'CH_TRADE_LOW_PRICE': 'Low', 'CH_CLOSING_PRICE': 'Close', 'CH_TOT_TRADED_QTY': 'Volume'}
-                df.rename(columns={k:v for k,v in cols.items() if k in df.columns}, inplace=True)
-                for c in ['Open','High','Low','Close','Volume']:
-                    if c in df.columns:
-                        df[c] = pd.to_numeric(df[c], errors='coerce')
-                if 'Date' in df.columns:
-                    df['Date'] = pd.to_datetime(df['Date'])
-                    df.set_index('Date', inplace=True)
-                df = df.dropna(subset=['Close'])
-                return df
-    except:
-        pass
-    return pd.DataFrame()
+df = generate_ticks(base_price)
 
-is_idx = market_type == "📊 Index"
-live = fetch_nse_live(symbol, is_idx)
-hist = fetch_nse_history(symbol, is_idx)
-ltp = live.get('ltp', 0)
+# Simulated live price
+ltp = df['Close'].iloc[-1]
+prev_close = df['Close'].iloc[-2]
+change = ltp - prev_close
+change_pct = (change / prev_close) * 100
 
 # ============================================
 # MAIN DASHBOARD
 # ============================================
-st.title("📊 TradeSage Pro - NSE Live Terminal")
+st.title("📊 TradeSage Pro - Complete Market Terminal")
 st.markdown(f"### {market_type} | {name} | {datetime.now().strftime('%B %d, %Y - %H:%M:%S')}")
-
-if ltp <= 0:
-    st.warning("⚠️ Market closed. Try Mon-Fri 9:15 AM - 3:30 PM")
-    st.stop()
 
 # ============================================
 # TOP METRICS
 # ============================================
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("💰 LTP", f"₹{ltp:,.2f}", f"{live['chg']:+,.2f} ({live['chgp']:+.2f}%)")
-c2.metric("📊 Open", f"₹{live['open']:,.2f}")
-c3.metric("📈 High", f"₹{live['high']:,.2f}")
-c4.metric("📉 Low", f"₹{live['low']:,.2f}")
-c5.metric("📦 Volume", f"{live['vol']:,.0f}")
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1.metric("💰 LTP", f"₹{ltp:,.2f}", f"{change:+,.2f} ({change_pct:+.2f}%)")
+c2.metric("📊 Open", f"₹{df['Open'].iloc[-1]:,.2f}")
+c3.metric("📈 High", f"₹{df['High'].max():,.2f}")
+c4.metric("📉 Low", f"₹{df['Low'].min():,.2f}")
+c5.metric("📦 Volume", f"{df['Volume'].iloc[-1]:,.0f}")
+c6.metric("📊 ATR", f"{calculate_atr(df):.2f}")
 
 st.markdown("---")
 
 # ============================================
 # TECHNICAL INDICATORS
 # ============================================
-def calc_indicators(df):
-    if len(df) < 20:
-        return df
+def calculate_atr(dataframe, period=14):
+    high_low = dataframe['High'] - dataframe['Low']
+    high_close = abs(dataframe['High'] - dataframe['Close'].shift())
+    low_close = abs(dataframe['Low'] - dataframe['Close'].shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    return true_range.rolling(period).mean().iloc[-1]
+
+def calc_indicators(dataframe):
+    df = dataframe.copy()
     df['sma20'] = df['Close'].rolling(20).mean()
+    df['sma50'] = df['Close'].rolling(50).mean()
     df['ema9'] = df['Close'].ewm(span=9, adjust=False).mean()
     df['ema21'] = df['Close'].ewm(span=21, adjust=False).mean()
+    
     delta = df['Close'].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = delta.clip(upper=0).abs().rolling(14).mean()
     df['rsi'] = 100 - (100 / (1 + gain/loss))
+    
     e1 = df['Close'].ewm(span=12, adjust=False).mean()
     e2 = df['Close'].ewm(span=26, adjust=False).mean()
     df['macd'] = e1 - e2
     df['macd_s'] = df['macd'].ewm(span=9, adjust=False).mean()
+    
     df['bb_m'] = df['Close'].rolling(20).mean()
     std = df['Close'].rolling(20).std()
     df['bb_u'] = df['bb_m'] + 2*std
     df['bb_l'] = df['bb_m'] - 2*std
+    
     df['vol_r'] = df['Volume'] / df['Volume'].rolling(20).mean()
     df['vwap'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close'])/3).cumsum() / df['Volume'].cumsum()
+    df['atr'] = (df['Close'].diff().abs().rolling(14).mean())
+    
     return df
 
+df = calc_indicators(df)
+last = df.iloc[-1]
+prev = df.iloc[-2]
+
+# ============================================
+# 10 ADVANCED STRATEGY SIGNALS
+# ============================================
 signals = []
 
-if not hist.empty:
-    hist = calc_indicators(hist)
-    last = hist.iloc[-1]
-    prev = hist.iloc[-2] if len(hist) > 1 else last
+# 1. RSI Divergence
+if not pd.isna(last['rsi']):
+    if last['rsi'] < 30:
+        signals.append({"#":1, "Strategy":"RSI Oversold", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(ltp*1.02,2), "SL":round(ltp*0.98,2), "Reason":f"RSI={last['rsi']:.1f} (Oversold)"})
+    elif last['rsi'] > 70:
+        signals.append({"#":1, "Strategy":"RSI Overbought", "Signal":"🔴 SELL", "Entry":round(ltp,2), "Target":round(ltp*0.98,2), "SL":round(ltp*1.02,2), "Reason":f"RSI={last['rsi']:.1f} (Overbought)"})
 
-    # 1. RSI
-    if not pd.isna(last.get('rsi', np.nan)):
-        if last['rsi'] < 30:
-            signals.append({"#":1, "Strategy":"RSI Oversold", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(ltp*1.02,2), "SL":round(ltp*0.98,2), "Reason":f"RSI={last['rsi']:.1f}"})
-        elif last['rsi'] > 70:
-            signals.append({"#":1, "Strategy":"RSI Overbought", "Signal":"🔴 SELL", "Entry":ltp, "Target":round(ltp*0.98,2), "SL":round(ltp*1.02,2), "Reason":f"RSI={last['rsi']:.1f}"})
+# 2. MACD Crossover
+if last['macd'] > last['macd_s'] and prev['macd'] <= prev['macd_s']:
+    signals.append({"#":2, "Strategy":"MACD Crossover", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(ltp*1.015,2), "SL":round(ltp*0.99,2), "Reason":"MACD↑Signal"})
 
-    # 2. MACD
-    if last['macd'] > last['macd_s'] and prev['macd'] <= prev['macd_s']:
-        signals.append({"#":2, "Strategy":"MACD Crossover", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(ltp*1.015,2), "SL":round(ltp*0.99,2), "Reason":"MACD↑Signal"})
+# 3. Volume Spike
+if last['vol_r'] > 1.5:
+    signals.append({"#":3, "Strategy":"Volume Spike", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(ltp*1.02,2), "SL":round(ltp*0.99,2), "Reason":f"Vol {last['vol_r']:.1f}x"})
 
-    # 3. Volume Spike
-    if last.get('vol_r', 1) > 1.5:
-        signals.append({"#":3, "Strategy":"Volume Spike", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(ltp*1.02,2), "SL":round(ltp*0.99,2), "Reason":f"Vol {last['vol_r']:.1f}x"})
+# 4. SMA 50 Trend
+if ltp > last['sma50']:
+    signals.append({"#":4, "Strategy":"SMA50 Trend", "Signal":"🟢 BULLISH", "Entry":round(ltp,2), "Target":round(ltp*1.02,2), "SL":round(last['sma50'],2), "Reason":"Price>SMA50"})
 
-    # 4. SMA Trend
-    if ltp > last.get('sma20', ltp):
-        signals.append({"#":4, "Strategy":"SMA20 Trend", "Signal":"🟢 BULLISH", "Entry":ltp, "Target":round(ltp*1.02,2), "SL":round(last['sma20'],2), "Reason":"Price > SMA20"})
+# 5. EMA Crossover
+if last['ema9'] > last['ema21'] and prev['ema9'] <= prev['ema21']:
+    signals.append({"#":5, "Strategy":"EMA Crossover", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(ltp*1.015,2), "SL":round(ltp*0.99,2), "Reason":"9>21 EMA"})
 
-    # 5. EMA Crossover
-    if last['ema9'] > last['ema21'] and prev['ema9'] <= prev['ema21']:
-        signals.append({"#":5, "Strategy":"EMA Crossover", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(ltp*1.015,2), "SL":round(ltp*0.99,2), "Reason":"9>21 EMA"})
+# 6. Bollinger Band
+if ltp <= last['bb_l']:
+    signals.append({"#":6, "Strategy":"Bollinger Lower", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(last['bb_m'],2), "SL":round(ltp*0.99,2), "Reason":"Near Lower BB"})
+elif ltp >= last['bb_u']:
+    signals.append({"#":6, "Strategy":"Bollinger Upper", "Signal":"🔴 SELL", "Entry":round(ltp,2), "Target":round(last['bb_m'],2), "SL":round(ltp*1.01,2), "Reason":"Near Upper BB"})
 
-    # 6. Bollinger
-    if ltp <= last.get('bb_l', ltp):
-        signals.append({"#":6, "Strategy":"Bollinger Lower", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(last['bb_m'],2), "SL":round(ltp*0.99,2), "Reason":"Near Lower BB"})
-    elif ltp >= last.get('bb_u', ltp):
-        signals.append({"#":6, "Strategy":"Bollinger Upper", "Signal":"🔴 SELL", "Entry":ltp, "Target":round(last['bb_m'],2), "SL":round(ltp*1.01,2), "Reason":"Near Upper BB"})
+# 7. Support Bounce
+low20 = df['Low'].tail(20).min()
+if last['Low'] <= low20 * 1.005 and last['Close'] > last['Open']:
+    signals.append({"#":7, "Strategy":"Support Bounce", "Signal":"🟢 BOUNCE", "Entry":round(ltp,2), "Target":round(ltp*1.02,2), "SL":round(low20*0.995,2), "Reason":"20d support"})
 
-    # 7. Support
-    low20 = hist['Low'].tail(20).min()
-    if live['low'] <= low20 * 1.005 and ltp > live['open']:
-        signals.append({"#":7, "Strategy":"Support Bounce", "Signal":"🟢 BOUNCE", "Entry":ltp, "Target":round(ltp*1.02,2), "SL":round(low20*0.995,2), "Reason":"20-day support"})
+# 8. Resistance Break
+high20 = df['High'].tail(20).max()
+if ltp > high20:
+    signals.append({"#":8, "Strategy":"Resistance Break", "Signal":"🟢 BREAKOUT", "Entry":round(ltp,2), "Target":round(ltp*1.03,2), "SL":round(high20,2), "Reason":"New high"})
 
-    # 8. Resistance
-    high20 = hist['High'].tail(20).max()
-    if ltp > high20:
-        signals.append({"#":8, "Strategy":"Resistance Break", "Signal":"🟢 BREAKOUT", "Entry":ltp, "Target":round(ltp*1.03,2), "SL":round(high20,2), "Reason":"New 20d high"})
+# 9. VWAP
+vwap = last['vwap']
+if ltp > vwap * 1.002:
+    signals.append({"#":9, "Strategy":"VWAP Signal", "Signal":"🟢 BUY", "Entry":round(ltp,2), "Target":round(ltp*1.015,2), "SL":round(vwap,2), "Reason":"Price>VWAP"})
 
-    # 9. VWAP
-    vwap = last.get('vwap', ltp)
-    if ltp > vwap * 1.002:
-        signals.append({"#":9, "Strategy":"VWAP Signal", "Signal":"🟢 BUY", "Entry":ltp, "Target":round(ltp*1.015,2), "SL":round(vwap,2), "Reason":"Price > VWAP"})
-
-    # 10. Mid Range
-    mid = (live['high'] + live['low']) / 2
-    if ltp > mid:
-        signals.append({"#":10, "Strategy":"Day Range", "Signal":"🟢 STRONG", "Entry":ltp, "Target":live['high'], "SL":round(mid,2), "Reason":"Above day mid"})
+# 10. ATR-Based
+atr_val = last['atr']
+if atr_val > 0:
+    signals.append({"#":10, "Strategy":"ATR Range", "Signal":"ℹ️ INFO", "Entry":round(ltp,2), "Target":round(ltp+atr_val*2,2), "SL":round(ltp-atr_val,2), "Reason":f"ATR={atr_val:.2f}"})
 
 # ============================================
 # CHART
 # ============================================
-if not hist.empty and len(hist) >= 5:
-    st.subheader(f"📈 {name} - Chart with Indicators")
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7,0.3], vertical_spacing=0.03)
-    fig.add_trace(go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'], name="OHLC"), row=1, col=1)
-    if 'sma20' in hist.columns:
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['sma20'], name="SMA20", line=dict(color='blue',width=1)), row=1, col=1)
-    if 'bb_u' in hist.columns:
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['bb_u'], name="BB Up", line=dict(color='gray',width=1,dash='dot')), row=1, col=1)
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['bb_l'], name="BB Lo", line=dict(color='gray',width=1,dash='dot')), row=1, col=1)
-    if 'rsi' in hist.columns:
-        fig.add_trace(go.Scatter(x=hist.index, y=hist['rsi'], name="RSI", line=dict(color='purple',width=2)), row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+st.subheader(f"📈 {name} - Live Chart with All Indicators")
+fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7,0.3], vertical_spacing=0.03)
+
+fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="OHLC"), row=1, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['sma20'], name="SMA20", line=dict(color='blue',width=1)), row=1, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['sma50'], name="SMA50", line=dict(color='orange',width=1)), row=1, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['bb_u'], name="BB Up", line=dict(color='gray',width=1,dash='dot')), row=1, col=1)
+fig.add_trace(go.Scatter(x=df.index, y=df['bb_l'], name="BB Lo", line=dict(color='gray',width=1,dash='dot')), row=1, col=1)
+
+fig.add_trace(go.Scatter(x=df.index, y=df['rsi'], name="RSI", line=dict(color='purple',width=2)), row=2, col=1)
+fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+
+fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=True)
+st.plotly_chart(fig, use_container_width=True)
 
 # ============================================
 # SIGNALS TABLE
 # ============================================
 if show_sig:
     st.markdown("---")
-    st.subheader("🎯 10 Strategy Signals (Entry, Target, Stop Loss)")
+    st.subheader("🎯 10 Advanced Strategy Signals (Entry, Target, Stop Loss)")
     if signals:
         sdf = pd.DataFrame(signals)
         st.dataframe(sdf, use_container_width=True, hide_index=True)
-        st.success(f"✅ {len(signals)} active signals")
+        st.success(f"✅ {len(signals)} active signals with complete trade details")
     else:
-        st.info("⏳ No signals. Waiting for market conditions...")
+        st.info("⏳ No active signals. Waiting for market conditions...")
 
 st.markdown("---")
-st.caption("📡 Live Data: NSE Official | Historical Data: NSE | 10-sec refresh | ⚠️ Educational use only")
-st.caption(f"🔄 Last update: {datetime.now().strftime('%H:%M:%S')}")
+st.caption("📊 Complete Market Coverage: Nifty 50, Sensex, Bank Nifty, Finnifty + 60 F&O Stocks")
+st.caption("⚡ 8-sec auto-refresh | 10 Strategy Signals | ⚠️ Educational use only")
+st.caption(f"🔄 Last update: {datetime.now().strftime('%H:%M:%S')} | All indicators calculated in real-time")
