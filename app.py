@@ -123,7 +123,7 @@ c2.metric("📊 Open", f"₹{df['Open'].iloc[-1]:,.2f}")
 c3.metric("📈 High", f"₹{df['High'].max():,.2f}")
 c4.metric("📉 Low", f"₹{df['Low'].min():,.2f}")
 c5.metric("📦 Volume", f"{df['Volume'].iloc[-1]:,.0f}")
-c6.metric("📊 ATR", f"{calculate_atr(df):.2f}")
+c6.metric("📊 ATR", f"{df['atr'].iloc[-1]:.2f}")
 
 st.markdown("---")
 
