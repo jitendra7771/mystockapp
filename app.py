@@ -1,21 +1,28 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 import time
+import requests
+import json
 
-st.set_page_config(page_title="TradeSage Pro | NSE Live F&O", page_icon="📊", layout="wide")
+st.set_page_config(page_title="TradeSage Pro | Upstox Live", page_icon="📊", layout="wide")
 
 # ============================================
-# AUTO REFRESH (हर 2 सेकंड में)
+# UPSTOX CREDENTIALS
+# ============================================
+ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI2MDY2MDEiLCJqdGkiOiI2OWZjOTNlYmVhYmNiMTA1YWVhYzQ2ZmEiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6dHJ1ZSwiaXNFeHRlbmRlZCI6dHJ1ZSwiaWF0IjoxNzc4MTYwNjE5LCJpc3MiOiJ1ZGFwaS1nYXRld2F5LXNlcnZpY2UiLCJleHAiOjE4MDk3MjcyMDB9.xIVEXstq39A1xI1MlJ5Dby3wzToHs1WJcw8LdSZebGU"
+BASE_URL = "https://api.upstox.com/v2"
+
+# ============================================
+# AUTO REFRESH (हर 3 सेकंड)
 # ============================================
 if 'last_refresh' not in st.session_state:
     st.session_state.last_refresh = time.time()
 
-if time.time() - st.session_state.last_refresh > 2:
+if time.time() - st.session_state.last_refresh > 3:
     st.session_state.last_refresh = time.time()
     st.rerun()
 
@@ -23,269 +30,223 @@ if time.time() - st.session_state.last_refresh > 2:
 # SIDEBAR
 # ============================================
 st.sidebar.title("📋 TradeSage Pro Panel")
+st.sidebar.markdown("---")
 
-market_type = st.sidebar.radio("Market:", ["📈 Equity", "📊 Index", "🔄 F&O Options"], index=1)
+market_type = st.sidebar.radio("Market:", ["📈 Equity", "📊 Index", "🔄 F&O"], index=1)
+
+# Symbols mapping (Upstox format)
+index_map = {
+    "NIFTY 50": "NSE_INDEX|Nifty 50",
+    "BANK NIFTY": "NSE_INDEX|Nifty Bank",
+    "SENSEX": "BSE_INDEX|SENSEX",
+}
+
+equity_map = {
+    "RELIANCE": "NSE_EQ|INE002A01018",
+    "TCS": "NSE_EQ|INE467B01029",
+    "HDFC BANK": "NSE_EQ|INE040A01034",
+    "INFOSYS": "NSE_EQ|INE009A01021",
+    "ICICI BANK": "NSE_EQ|INE090A01021",
+    "ITC": "NSE_EQ|INE154A01025",
+    "SBI": "NSE_EQ|INE062A01020",
+    "TATA MOTORS": "NSE_EQ|INE155A01022",
+}
 
 st.sidebar.markdown("---")
 
-# Symbols
-equity_list = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "LT.NS", "TATAMOTORS.NS"]
-index_list = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "SENSEX": "^BSESN", "FINNIFTY": "NIFTY_FIN_SERVICE.NS"}
-fno_list = ["NIFTY", "BANKNIFTY", "FINNIFTY"]
-
-if market_type == "📈 Equity":
-    symbol = st.sidebar.selectbox("Stock:", equity_list)
-elif market_type == "📊 Index":
-    symbol_name = st.sidebar.selectbox("Index:", list(index_list.keys()))
-    symbol = index_list[symbol_name]
+if market_type == "📊 Index":
+    symbol_name = st.sidebar.selectbox("Select Index:", list(index_map.keys()))
+    instrument_key = index_map[symbol_name]
+elif market_type == "📈 Equity":
+    symbol_name = st.sidebar.selectbox("Select Stock:", list(equity_map.keys()))
+    instrument_key = equity_map[symbol_name]
 else:
-    fno_symbol = st.sidebar.selectbox("F&O Index:", fno_list)
-    option_type = st.sidebar.radio("Type:", ["CE", "PE"])
-    expiry = st.sidebar.selectbox("Expiry:", ["Current Week", "Current Month"])
-    strike = st.sidebar.number_input("Strike:", value=19500, step=50)
-    symbol = f"{fno_symbol}{strike}{option_type}.NS"
+    symbol_name = st.sidebar.selectbox("F&O:", ["NIFTY", "BANKNIFTY"])
+    instrument_key = index_map.get(f"{symbol_name} 50" if symbol_name == "NIFTY" else "BANK NIFTY", "NSE_INDEX|Nifty 50")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Strategies")
 show_strategies = st.sidebar.checkbox("Show Strategy Signals", value=True)
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"🔄 Auto-refresh: 2 sec | {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"🔄 Auto-refresh: 3s | {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption("📡 Data: Upstox Official API")
 
 # ============================================
-# DATA FETCH
+# DATA FETCH FROM UPSTOX
 # ============================================
-@st.cache_data(ttl=2)
-def get_live_data(sym):
+@st.cache_data(ttl=3)
+def fetch_ltp(token, key):
     try:
-        t = yf.Ticker(sym)
-        df = t.history(period="1d", interval="1m")
-        info = t.info
-        return df, info
+        url = f"{BASE_URL}/market-data/ltp"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        params = {"instrument_key": key}
+        response = requests.get(url, headers=headers, params=params, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('data', {})
+        return {}
     except:
-        return pd.DataFrame(), {}
+        return {}
 
-df, info = get_live_data(symbol)
-
-# ============================================
-# F&O DATA (OI, PCR)
-# ============================================
-def get_fno_data(base_symbol):
+@st.cache_data(ttl=3)
+def fetch_ohlc(token, key):
     try:
-        if "NIFTY" in base_symbol:
-            sym = "^NSEI"
-        elif "BANKNIFTY" in base_symbol:
-            sym = "^NSEBANK"
-        elif "FINNIFTY" in base_symbol:
-            sym = "NIFTY_FIN_SERVICE.NS"
-        else:
-            sym = f"{base_symbol}.NS"
-        
-        t = yf.Ticker(sym)
-        info = t.info
-        
-        return {
-            'open_interest': info.get('openInterest', np.random.randint(5000000, 15000000)),
-            'prev_oi': info.get('sharesShort', np.random.randint(5000000, 15000000)),
-            'pcr': round(np.random.uniform(0.7, 1.5), 2)
-        }
+        url = f"{BASE_URL}/market-data/ohlc"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        params = {"instrument_key": key, "interval": "1minute"}
+        response = requests.get(url, headers=headers, params=params, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('data', {})
+        return {}
     except:
-        return {'open_interest': np.random.randint(5000000, 15000000), 'pcr': round(np.random.uniform(0.7, 1.5), 2)}
+        return {}
 
-if market_type != "📈 Equity":
-    fno = get_fno_data(fno_symbol if market_type == "🔄 F&O Options" else symbol_name)
+ltp_data = fetch_ltp(ACCESS_TOKEN, instrument_key)
+ohlc_data = fetch_ohlc(ACCESS_TOKEN, instrument_key)
+
+# ============================================
+# PROCESS DATA
+# ============================================
+current_price = ltp_data.get(instrument_key, {}).get('last_price', 0)
+
+# Build DataFrame from OHLC
+if ohlc_data and 'candles' in ohlc_data:
+    candles = ohlc_data['candles']
+    df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df.set_index('timestamp', inplace=True)
 else:
-    try:
-        t = yf.Ticker(symbol)
-        info = t.info
-        fno = {
-            'open_interest': info.get('openInterest', 0),
-            'prev_oi': info.get('sharesShort', 0),
-            'pcr': 0
-        }
-    except:
-        fno = {'open_interest': 0, 'pcr': 0}
+    df = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
 
 # ============================================
 # INDICATORS & STRATEGIES
 # ============================================
-def calculate_all(df):
-    if df.empty or len(df) < 20:
-        return df, []
+def calculate_all(df, current_price):
+    signals = []
+    if df.empty or len(df) < 5:
+        return signals
     
-    df['sma_20'] = df['Close'].rolling(20).mean()
-    df['sma_50'] = df['Close'].rolling(50).mean() if len(df) >= 50 else df['sma_20']
-    df['ema_9'] = df['Close'].ewm(span=9, adjust=False).mean()
-    df['ema_21'] = df['Close'].ewm(span=21, adjust=False).mean()
+    df['sma_20'] = df['close'].rolling(20).mean()
+    df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
     
-    delta = df['Close'].diff()
+    delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
     
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
     
-    df['bb_mid'] = df['Close'].rolling(20).mean()
-    std = df['Close'].rolling(20).std()
+    df['bb_mid'] = df['close'].rolling(20).mean()
+    std = df['close'].rolling(20).std()
     df['bb_up'] = df['bb_mid'] + 2*std
     df['bb_low'] = df['bb_mid'] - 2*std
     
-    df['vol_sma'] = df['Volume'].rolling(20).mean()
-    df['vol_ratio'] = df['Volume'] / df['vol_sma']
-    
-    df['vwap'] = (df['Volume'] * (df['High'] + df['Low'] + df['Close'])/3).cumsum() / df['Volume'].cumsum()
+    df['vol_sma'] = df['volume'].rolling(20).mean()
+    df['vol_ratio'] = df['volume'] / df['vol_sma']
     
     last = df.iloc[-1]
-    prev = df.iloc[-2]
-    signals = []
+    prev = df.iloc[-2] if len(df) > 1 else last
     
     # 1. RSI
-    if last['rsi'] < 30:
-        signals.append({"Strategy": "RSI Oversold", "Signal": "🟢 BUY", "Entry": last['Close'], "Target": round(last['Close']*1.02,2), "SL": round(last['Close']*0.98,2), "Reason": f"RSI={last['rsi']:.1f}"})
-    elif last['rsi'] > 70:
-        signals.append({"Strategy": "RSI Overbought", "Signal": "🔴 SELL", "Entry": last['Close'], "Target": round(last['Close']*0.98,2), "SL": round(last['Close']*1.02,2), "Reason": f"RSI={last['rsi']:.1f}"})
+    if not pd.isna(last.get('rsi', np.nan)):
+        if last['rsi'] < 30:
+            signals.append({"Strategy": "RSI Oversold", "Signal": "🟢 BUY", "Entry": current_price, "Target": round(current_price*1.02,2), "SL": round(current_price*0.98,2), "Reason": f"RSI={last['rsi']:.1f}"})
+        elif last['rsi'] > 70:
+            signals.append({"Strategy": "RSI Overbought", "Signal": "🔴 SELL", "Entry": current_price, "Target": round(current_price*0.98,2), "SL": round(current_price*1.02,2), "Reason": f"RSI={last['rsi']:.1f}"})
     
     # 2. MACD
-    if last['macd'] > last['macd_signal'] and prev['macd'] <= prev['macd_signal']:
-        signals.append({"Strategy": "MACD Crossover", "Signal": "🟢 BUY", "Entry": last['Close'], "Target": round(last['Close']*1.015,2), "SL": round(last['Close']*0.99,2), "Reason": "MACD ↑ Signal"})
-    elif last['macd'] < last['macd_signal'] and prev['macd'] >= prev['macd_signal']:
-        signals.append({"Strategy": "MACD Crossover", "Signal": "🔴 SELL", "Entry": last['Close'], "Target": round(last['Close']*0.985,2), "SL": round(last['Close']*1.01,2), "Reason": "MACD ↓ Signal"})
+    if last.get('macd', 0) > last.get('macd_signal', 0) and prev.get('macd', 0) <= prev.get('macd_signal', 0):
+        signals.append({"Strategy": "MACD Crossover", "Signal": "🟢 BUY", "Entry": current_price, "Target": round(current_price*1.015,2), "SL": round(current_price*0.99,2), "Reason": "MACD ↑ Signal"})
     
     # 3. Volume Spike
-    if last['vol_ratio'] > 1.5:
-        dirn = "🟢 BUY" if last['Close'] > last['vwap'] else "🔴 SELL"
-        signals.append({"Strategy": "Volume Spike", "Signal": dirn, "Entry": last['Close'], "Target": round(last['Close']*1.02,2) if "BUY" in dirn else round(last['Close']*0.98,2), "SL": round(last['Close']*0.99,2) if "BUY" in dirn else round(last['Close']*1.01,2), "Reason": f"Vol {last['vol_ratio']:.1f}x"})
+    if last.get('vol_ratio', 1) > 1.5:
+        signals.append({"Strategy": "Volume Spike", "Signal": "🟢 BUY", "Entry": current_price, "Target": round(current_price*1.02,2), "SL": round(current_price*0.99,2), "Reason": f"Vol {last['vol_ratio']:.1f}x"})
     
     # 4. SMA Trend
-    if last['Close'] > last['sma_20']:
-        signals.append({"Strategy": "SMA Trend", "Signal": "🟢 BULLISH", "Entry": last['Close'], "Target": round(last['Close']*1.02,2), "SL": round(last['sma_20'],2), "Reason": "Price > 20 SMA"})
+    if current_price > last.get('sma_20', current_price):
+        signals.append({"Strategy": "SMA Trend", "Signal": "🟢 BULLISH", "Entry": current_price, "Target": round(current_price*1.02,2), "SL": round(last['sma_20'],2), "Reason": "Price > 20 SMA"})
     
     # 5. EMA Crossover
-    if last['ema_9'] > last['ema_21'] and prev['ema_9'] <= prev['ema_21']:
-        signals.append({"Strategy": "EMA Crossover", "Signal": "🟢 BUY", "Entry": last['Close'], "Target": round(last['Close']*1.015,2), "SL": round(last['Close']*0.99,2), "Reason": "9 EMA ↑ 21 EMA"})
+    if last.get('ema_9', 0) > last.get('ema_21', 0):
+        signals.append({"Strategy": "EMA Crossover", "Signal": "🟢 BUY", "Entry": current_price, "Target": round(current_price*1.015,2), "SL": round(current_price*0.99,2), "Reason": "9 EMA > 21 EMA"})
     
-    # 6. Bollinger Squeeze
-    bbw = (last['bb_up'] - last['bb_low']) / last['bb_mid']
-    if bbw < 0.03:
-        signals.append({"Strategy": "Bollinger Squeeze", "Signal": "🟡 BREAKOUT", "Entry": last['Close'], "Target": round(last['Close']*1.03,2), "SL": round(last['bb_mid'],2), "Reason": f"BB Width={bbw:.2%}"})
+    # 6. Bollinger
+    if current_price <= last.get('bb_low', current_price):
+        signals.append({"Strategy": "Bollinger Band", "Signal": "🟢 BUY", "Entry": current_price, "Target": round(last.get('bb_mid', current_price),2), "SL": round(current_price*0.99,2), "Reason": "Near Lower Band"})
+    elif current_price >= last.get('bb_up', current_price):
+        signals.append({"Strategy": "Bollinger Band", "Signal": "🔴 SELL", "Entry": current_price, "Target": round(last.get('bb_mid', current_price),2), "SL": round(current_price*1.01,2), "Reason": "Near Upper Band"})
     
-    # 7. VWAP
-    if abs(last['Close'] - last['vwap']) / last['vwap'] < 0.005:
-        signals.append({"Strategy": "VWAP Support", "Signal": "🟢 SUPPORT", "Entry": last['Close'], "Target": round(last['Close']*1.01,2), "SL": round(last['vwap']*0.995,2), "Reason": "Near VWAP"})
-    
-    # 8. PCR (F&O)
-    if fno and fno.get('pcr', 0) > 1.3:
-        signals.append({"Strategy": "PCR Analysis", "Signal": "🟢 BULLISH", "Entry": last['Close'], "Target": round(last['Close']*1.02,2), "SL": round(last['Close']*0.99,2), "Reason": f"PCR={fno['pcr']:.2f}"})
-    elif fno and fno.get('pcr', 0) < 0.7:
-        signals.append({"Strategy": "PCR Analysis", "Signal": "🔴 BEARISH", "Entry": last['Close'], "Target": round(last['Close']*0.98,2), "SL": round(last['Close']*1.01,2), "Reason": f"PCR={fno['pcr']:.2f}"})
-    
-    # 9. OI Change
-    if fno and fno.get('open_interest', 0) > fno.get('prev_oi', 0) * 1.1:
-        signals.append({"Strategy": "OI Buildup", "Signal": "🟢 BULLISH", "Entry": last['Close'], "Target": round(last['Close']*1.02,2), "SL": round(last['Close']*0.99,2), "Reason": "OI ↑ 10%"})
-    
-    # 10. Support Bounce
-    low_20 = df['Low'].tail(20).min()
-    if last['Low'] <= low_20 * 1.005 and last['Close'] > last['Open']:
-        signals.append({"Strategy": "Support Bounce", "Signal": "🟢 BOUNCE", "Entry": last['Close'], "Target": round(last['Close']*1.02,2), "SL": round(low_20*0.995,2), "Reason": "20-day low bounce"})
-    
-    return df, signals
+    return signals
 
-df, signals = calculate_all(df)
+signals = calculate_all(df, current_price) if current_price > 0 else []
 
 # ============================================
 # MAIN DASHBOARD
 # ============================================
-st.title("📊 TradeSage Pro - NSE Live F&O Terminal")
-st.markdown(f"### {market_type} | {datetime.now().strftime('%B %d, %Y - %H:%M:%S')} | Auto-Refresh: 2s")
+st.title("📊 TradeSage Pro - Upstox Live Terminal")
+st.markdown(f"### {market_type} | {symbol_name} | {datetime.now().strftime('%B %d, %Y - %H:%M:%S')}")
 
-if df.empty:
-    st.warning("⚠️ Market may be closed or data unavailable. Try during market hours (9:15 AM - 3:30 PM)")
-    st.info("Showing last available data...")
+if current_price <= 0:
+    st.warning("⚠️ Market closed or data unavailable. Try during market hours (9:15 AM - 3:30 PM)")
     st.stop()
-
-last = df.iloc[-1]
-prev_close = df.iloc[-2]['Close'] if len(df) > 1 else last['Close']
-change = last['Close'] - prev_close
-change_pct = (change / prev_close) * 100
 
 # ============================================
 # TOP METRICS
 # ============================================
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2, col3, col4, col5 = st.columns(5)
+
+change_data = ltp_data.get(instrument_key, {})
+change = change_data.get('change', 0)
+change_pct = change_data.get('change_percent', 0)
 
 with col1:
-    st.metric("💰 LTP", f"₹{last['Close']:.2f}", f"{change:+.2f} ({change_pct:+.2f}%)")
+    st.metric("💰 LTP", f"₹{current_price:,.2f}", f"{change:+,.2f} ({change_pct:+.2f}%)")
 
 with col2:
-    st.metric("📊 Open", f"₹{last['Open']:.2f}")
+    if not df.empty:
+        st.metric("📊 Open", f"₹{df['open'].iloc[-1]:,.2f}")
 
 with col3:
-    st.metric("📈 High", f"₹{df['High'].max():.2f}")
+    if not df.empty:
+        st.metric("📈 High", f"₹{df['high'].max():,.2f}")
 
 with col4:
-    st.metric("📉 Low", f"₹{df['Low'].min():.2f}")
+    if not df.empty:
+        st.metric("📉 Low", f"₹{df['low'].min():,.2f}")
 
 with col5:
-    st.metric("📦 Volume", f"{last['Volume']:,.0f}")
+    if not df.empty:
+        st.metric("📦 Volume", f"{df['volume'].iloc[-1]:,.0f}")
 
-with col6:
-    rsi_val = df['rsi'].iloc[-1] if 'rsi' in df.columns else 0
-    st.metric("📉 RSI", f"{rsi_val:.1f}")
-
-# ============================================
-# F&O DATA ROW
-# ============================================
-if market_type != "📈 Equity":
-    st.markdown("---")
-    st.subheader("📋 F&O Data")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        oi_val = fno.get('open_interest', 0)
-        st.metric("📊 Open Interest", f"{oi_val:,}")
-    
-    with col2:
-        oi_change = fno.get('open_interest', 0) - fno.get('prev_oi', 0)
-        st.metric("📈 OI Change", f"{oi_change:+,}")
-    
-    with col3:
-        pcr = fno.get('pcr', 0)
-        pcr_status = "Bullish" if pcr > 1.2 else "Bearish" if pcr < 0.8 else "Neutral"
-        st.metric("📋 Put/Call Ratio", f"{pcr:.2f}", delta=pcr_status)
-    
-    with col4:
-        st.metric("🎯 VWAP", f"₹{df['vwap'].iloc[-1]:.2f}")
+st.markdown("---")
 
 # ============================================
 # CHART
 # ============================================
-st.markdown("---")
-st.subheader(f"📈 {symbol} - Live Chart")
-
-fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
-
-fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="OHLC"), row=1, col=1)
-
-if 'sma_20' in df.columns:
-    fig.add_trace(go.Scatter(x=df.index, y=df['sma_20'], name="SMA 20", line=dict(color='blue', width=1)), row=1, col=1)
-if 'ema_9' in df.columns:
-    fig.add_trace(go.Scatter(x=df.index, y=df['ema_9'], name="EMA 9", line=dict(color='orange', width=1)), row=1, col=1)
-
-colors = ['red' if df['Close'].iloc[i] < df['Open'].iloc[i] else 'green' for i in range(len(df))]
-fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name="Volume", marker_color=colors), row=2, col=1)
-
-if 'rsi' in df.columns:
-    fig.add_trace(go.Scatter(x=df.index, y=df['rsi'], name="RSI", line=dict(color='purple', width=2)), row=3, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-
-fig.update_layout(height=650, showlegend=True, xaxis_rangeslider_visible=False, template="plotly_dark")
-st.plotly_chart(fig, use_container_width=True)
+if not df.empty:
+    st.subheader(f"📈 {symbol_name} - Live Chart")
+    
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+    
+    fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="OHLC"), row=1, col=1)
+    
+    if 'sma_20' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['sma_20'], name="SMA 20", line=dict(color='blue', width=1)), row=1, col=1)
+    
+    if 'rsi' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['rsi'], name="RSI", line=dict(color='purple', width=2)), row=2, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    
+    fig.update_layout(height=550, showlegend=True, xaxis_rangeslider_visible=False, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
 # ============================================
 # STRATEGY SIGNALS
@@ -297,13 +258,10 @@ if show_strategies:
     if signals:
         sdf = pd.DataFrame(signals)
         st.dataframe(sdf, use_container_width=True, hide_index=True)
-        st.success(f"✅ {len(signals)} active signals")
+        st.success(f"✅ {len(signals)} active signals | Entry/Exit, Target & Stop Loss above")
     else:
-        st.info("No active signals right now")
+        st.info("No active signals right now. Waiting for market conditions...")
 
-# ============================================
-# FOOTER
-# ============================================
 st.markdown("---")
-st.caption("⚠️ Educational purpose only | Data: Yahoo Finance (NSE/BSE) | 2-sec auto-refresh")
+st.caption("⚠️ Educational purpose only | 📡 Data: Upstox Official API | 3-sec auto-refresh")
 st.caption(f"🔄 Last update: {datetime.now().strftime('%H:%M:%S')} | Market hours: 9:15 AM - 3:30 PM")
